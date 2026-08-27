@@ -1,0 +1,234 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A browser app that listens through the microphone and reports either the chord being
+played or a single note's pitch, using Essentia.js (WebAssembly) loaded from jsDelivr.
+No build step, no framework, no bundler, no git repo.
+
+Only two files are the app: **`index.html`** and **`worker.js`**. Both must be deployed
+together — the app is a static site and works on any static host. `server.js` is a
+local dev server only and is never deployed.
+
+`index1.html` is a stale manual backup (build `2026-08-26 22:27`, predates the chord
+template matcher). It is not wired to anything. Do not edit it; do not treat it as a
+second entry point.
+
+A `mobile/` folder wraps this same app for the App Store / Play Store via Capacitor -
+see "Mobile packaging" below. It does not change any of the above: the web deploy is
+still just `index.html` + `worker.js`, no build step.
+
+## Commands
+
+```bash
+npm start                  # dev server on http://localhost:3500
+node server.js --port 8080 # or PORT=8080 node server.js
+```
+
+Use `http://localhost` — `getUserMedia` needs a secure context, and localhost is the
+only exception to HTTPS. LAN addresses (`http://192.168.x.x:3500`) will have the mic
+blocked by the browser.
+
+`npm test` runs a chord-recognition accuracy sweep (`test/chord-accuracy.js`)
+against the real Essentia.js pipeline in Node — no browser needed. There is
+still no test framework for the UI logic beyond that; see "Verifying changes".
+
+## Architecture
+
+Three layers, and the split matters:
+
+**Audio thread → ring buffer (`index.html`).** A `ScriptProcessorNode` callback does
+nothing but copy samples into a circular `Float32Array`. It must connect straight to
+`audioCtx.destination` — its output buffer is zero-filled so this is already silent.
+An intervening zero-gain node is a silent branch Safari may optimise away, which stops
+the graph being pulled and `onaudioprocess` never fires at all.
+
+**Analysis loop (`index.html`).** Self-scheduling, deliberately *not* `setInterval`:
+the next frame is only requested after the previous result returns, so work can never
+queue up on a slow phone. Delay is `max(MIN_GAP, TARGET_PERIOD - lastMs)`. `adaptQuality()`
+drops from 22 frames to 8 when the median analysis time exceeds `SLOW_MS`, with
+hysteresis so it cannot flap.
+
+**DSP (`worker.js`).** Everything expensive lives here so the main thread stays at
+60fps — measured, the main thread holds a 16.9ms median frame time while the worker
+runs. The worker is stateless apart from `sampleRate` and `tuningHz`.
+
+Key detection runs on the **main thread**, not the worker: it scores the committed
+chord sequence, which is cheap string work, and needs no audio.
+
+### Chord recognition does not use Essentia's ChordsDetection
+
+`ChordsDetection` only knows 24 chords (major/minor) and does not merely simplify
+sevenths — it gets the root wrong (measured: `Am7`→`C`, `Dm7`→`F`, both at "100%").
+`worker.js` instead matches the 12-bin HPCP against L2-normalised templates by cosine
+similarity, then votes across frames.
+
+L2 normalisation is what makes this work with no tuning: a 3-note template wins when
+only 3 notes sound, a 4-note template wins once the seventh is actually there.
+
+Some chord types are **deliberately absent** because their pitch-class sets are
+identical and a 12-bin chroma folds away the octaves that would separate them:
+`C6` = `Am7`, `Am6` = `F#m7b5`, `Csus2` = `Gsus4`. Only a bass chroma could tell them
+apart. The commoner name is kept, so a played C6 is reported as Am7 — same notes.
+Do not "fix" this by adding the missing types back; it just makes the choice a coin flip.
+
+`CHORD_TYPES` in `worker.js` and `CHORD_QUALITIES` in `index.html` describe the same
+chord vocabulary and **must be kept in step**. Chord names carry a suffix, so nothing
+may parse them with a "does it end in m" test — `Cmaj7` would read as C minor. Use
+`parseChord()`.
+
+## Essentia.js gotchas
+
+These each cost real debugging time. The API is not what its names suggest.
+
+- **The `.web` build cannot run in a worker.** `essentia-wasm.web.js` hardcodes
+  `ENVIRONMENT_IS_WORKER=false`. Use `essentia-wasm.umd.js`, which also embeds the wasm
+  as a data URI so there is no `.wasm` path to resolve.
+- **The `.umd` build is CommonJS-only.** It ends with `exports.EssentiaWASM = Module`,
+  so `self.exports = {}` must exist *before* `importScripts` or it throws
+  "exports is not defined".
+- **`SpectralWhitening` returns `{magnitudes}` only.** There is no `.frequencies` on the
+  result; frequencies still come from the `SpectralPeaks` output.
+- **`Windowing(frame, normalized, size, type, ...)`** — `type` is the 4th argument, not
+  the 2nd. Passing `'hann'` second silently sets `normalized`.
+- **`SpectralPeaks` `minFrequency` must be > 0.** At 0 a DC peak slips through and HPCP
+  throws.
+- **HPCP `windowSize` below one bin (`12/size`) calls `abort()`** and takes the whole
+  WASM module down, not just that call. Wrap parameter sweeps in try/catch.
+- **Every returned vector must be `.delete()`d**, including nested outputs like
+  `res.ticks` / `res.estimates`. Leaks blow the WASM heap within a minute at ~7 calls/sec.
+- **HPCP bin 0 is A**, while MIDI pitch class 0 is C. Converting needs `((pc - 9) + 12) % 12`.
+- **`ChordsDetection` takes a `VectorVectorFloat`** (a whole sequence of HPCP frames) and
+  returns `{chords: VectorString, strength: VectorFloat}` — not a single frame, not scalars.
+- Chord names from Essentia mix sharps and flats (`C#` but `Eb`). The template matcher
+  emits sharps only, so no normalisation is needed any more.
+
+## Constants that were measured, not guessed
+
+Changing these without re-measuring will regress accuracy.
+
+| Constant | Value | Why |
+|---|---|---|
+| HPCP `windowSize` (`worker.js`) | `2` | 1 → 2 took guitar 90.0→95.8% and piano 92.5→100% over 120 trials/cell at 6 dB SNR. A wider window absorbs partials off the bin centre (piano string stiffness, slightly detuned instruments). |
+| HPCP `harmonics` | `8` | Swept 2/4/8/12/16 at `windowSize=2`: all identical. Not worth per-instrument tuning. |
+| `PITCH_MIN_HZ` / `MAX` | `30` / `4200` | Piano went 9/15 → 12/15 correct notes vs the old 60-2000, guitar unchanged at 8/8. A0/C1 stay unreachable: a 4096-sample window holds ~2 cycles there. |
+| `RMS_GATE` ladder | `0.0006…0.0100` | Detection survives down to RMS 0.0002 and at -6 dB SNR, so the gate is *not* about quality. It only stops the detector inventing chords out of room noise (it does, at up to 96% "confidence"), so it must sit just above the room's noise floor — hence adjustable + AUTO. |
+
+A separate guitar/piano mode was investigated and **rejected on measurement**: one
+parameter set wins for both instruments. Do not re-add it without new evidence.
+
+## Mobile / iOS constraints
+
+These apply equally inside the Capacitor iOS app (WKWebView) — it is the same iOS
+audio-session behaviour underneath, not a Safari-specific quirk.
+
+- **`AudioContext` must be constructed before any `await`** in the click handler. iOS
+  Safari only allows it inside a user gesture, and awaiting first breaks the chain,
+  leaving audio suspended forever.
+- The WASM init timeout is 45s. It was 8s and phones legitimately exceeded that
+  downloading 748KB and compiling a 2MB module.
+- `visibilitychange` and any touch resume a suspended context; iOS suspends on its own
+  and does not say so.
+
+## Verifying changes
+
+There is no test framework. The pattern that has worked:
+
+**Pure logic in `index.html`** — extract the functions by string markers and run them in
+Node against a stub DOM, so the test exercises the shipped source rather than a copy.
+Declare inside the `Function` scope whatever the real file declares outside the extracted
+range; do not regex-rewrite identifiers, which silently corrupts object literals:
+
+```js
+const html = fs.readFileSync('index.html', 'utf8');
+const src = "let mode='chord';let keyPending=null,keyPendingCount=0;const chordSeq=[];\n"
+  + html.slice(html.indexOf('const CHORD_QUALITIES'), html.indexOf('const mainEl'))
+  + html.slice(html.indexOf('/** Parse a chord name'), html.indexOf('    //  Analysis loop'))
+  + ";module.exports={parseChord,scoreKeys,keyLabel,keySignature,degreeChord,commitChord,updateKeyLine};";
+new Function('MIDI_NAMES', 'keyEl', 'sigEl', 'keyRowEl', 'module', src)(names, el, el, el, mod);
+```
+
+Those two slices cover the constants block and the key-detection block, and yield exactly
+the seven functions above. `chordNotes()` sits *between* them and is **not** included —
+widen the second slice if a test needs it. Stub elements only need `innerHTML` and a
+`classList` with `toggle`/`contains`.
+
+**DSP in `worker.js`** — drive the real worker from a page in the browser, generating
+test audio with `OfflineAudioContext` (sawtooth oscillators approximate a plucked or
+struck string well; for piano add inharmonicity `f_n = n·f0·√(1+B·n²)`, B ≈ 2e-4 mid-range).
+This needs no microphone permission.
+
+**Essentia itself in Node** — `essentia-wasm.umd.js` + `essentia.js-core.umd.js` both
+`require()` cleanly, which is the fastest way to sweep DSP parameters. This is
+productised as `test/chord-accuracy.js` (run via `npm test`): it extracts
+`CHORD_TYPES`/`matchChord`/`analyse` live from `worker.js` (same string-marker
+technique as the `index.html` extraction above — see
+`test/lib/load-worker-dsp.js`), generates synthetic guitar/piano chords
+(`test/lib/synth.js`), and drives them through the real Essentia pipeline
+(`test/lib/essentia-node.js`, caching the ~2.9MB CDN build in `test/.cache/`,
+safe to delete). Useful flags: `--trials=N`, `--noise=0.15` (simulates a
+noisy/mixed recording), `--piano`, `--root=B`, `--type=maj7`, `--quiet`.
+Re-run this after touching `CHORD_TYPES`, the HPCP call in `frameFeatures()`,
+or `FRAME_SIZE` — a change that looks fine on a few manual chords can regress
+a whole register silently (this is how the `maj7`/`B7`/`Bm7` priors below
+were found and fixed: they only broke above roughly F#/G on a guitar).
+
+When measuring accuracy, **repeat each configuration**. Oscillator phase and noise are
+random and run-to-run variance is ±1 case in 12 — enough to invent an effect that is
+not there. A single-run difference of one case means nothing.
+
+## Deploying
+
+Static host, HTTPS required (mic is blocked otherwise). Upload `index.html` and
+`worker.js` together — a missing `worker.js` surfaces as an opaque "Worker error" with
+no message, which is why `diagnoseWorker()` re-fetches the URL to report the real cause.
+
+`const BUILD` in `index.html` is a timestamp logged to the console at startup; bump it
+when changing behaviour so a stale CDN copy is identifiable.
+
+## Mobile packaging (App Store / Play Store)
+
+`mobile/` wraps `index.html` + `worker.js` in a Capacitor WebView shell to produce an
+installable Android/iOS app. It does not fork the source: `index.html` and `worker.js`
+are the same files as the web deploy, copied as-is by `mobile/sync.js`.
+
+**Why worker.js needs no mobile-specific branch.** worker.js tries `LOCAL`
+(`./essentia-*.js`, next to itself) before falling back to the jsDelivr `CDN` constant.
+On the plain web deploy those local files don't exist (only `index.html` + `worker.js`
+are uploaded), so the `LOCAL` importScripts() throws and it falls through to the CDN, as
+before. In the mobile build, `sync.js` copies `essentia-wasm.umd.js` +
+`essentia.js-core.umd.js` (reusing `test/lib/essentia-node.js`'s cache/downloader — one
+place owns fetching these, not two) into `mobile/www/` alongside `worker.js`, so `LOCAL`
+resolves and wins. This buys two things the CDN path can't: the app works with no
+network, and it avoids a WebView's default CSP blocking a cross-origin importScripts()
+to an external host.
+
+**Workflow** (`mobile/` has its own `package.json`, separate from the root one):
+
+```bash
+cd mobile
+nvm use            # Capacitor 8's CLI requires Node >=22 - see mobile/.nvmrc
+npm install         # first time only
+npm run android     # sync.js, then `cap sync`, then opens Android Studio
+npm run ios         # same, opens Xcode - macOS only, Xcode/CocoaPods are not available on Linux
+```
+
+Re-run `npm run sync` (or `android`/`ios`, which include it) after any change to the
+root `index.html` or `worker.js` — `mobile/www/` is a build artifact, never hand-edit it.
+
+**Platform permissions**, already wired into the generated projects — re-check these if
+`npx cap add android`/`add ios` are ever re-run, since that regenerates the manifests:
+- Android: `RECORD_AUDIO` in `mobile/android/app/src/main/AndroidManifest.xml`. The
+  WebView's own mic permission prompt is handled by Capacitor's
+  `BridgeWebChromeClient.onPermissionRequest` already - no `MainActivity.java` changes
+  needed.
+- iOS: `NSMicrophoneUsageDescription` in `mobile/ios/App/App/Info.plist` - required by
+  Apple review or the app crashes on first mic access instead of prompting.
+
+**What this sandbox could not do**: iOS needs Xcode (macOS-only) for anything past
+scaffolding the project - building, signing, and App Store Connect submission all need
+a Mac (or a cloud Mac CI). Android scaffolds and syncs fine here, but building the APK/AAB
+needs the Android SDK + a JDK, neither installed in this environment - do that step
+in Android Studio or a CI with the SDK present.

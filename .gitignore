@@ -1,0 +1,51 @@
+# Node
+node_modules/
+npm-debug.log*
+package-lock.json.bak
+
+# Essentia.js downloaded/cached for Node testing (test/lib/essentia-node.js
+# fetches these from jsDelivr on demand - ~2.9MB, no reason to version them).
+test/.cache/
+
+# --- mobile/ (Capacitor) ---
+#
+# Everything below is generated FROM the root index.html/worker.js by
+# `mobile/sync.js` + `npx cap sync` - never hand-edited, so none of it is
+# source. Re-running `npm run sync` (see CLAUDE.md > "Mobile packaging")
+# recreates all of it, including on a fresh CI checkout.
+mobile/www/
+mobile/android/app/src/main/assets/public/
+mobile/ios/App/App/public/
+
+# Android build output / local machine config
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/capacitor-cordova-android-plugins/build/
+mobile/android/local.properties
+*.apk
+*.aab
+
+# iOS build output / CocoaPods (reinstalled via `pod install`, not versioned)
+mobile/ios/App/Pods/
+mobile/ios/App/build/
+mobile/ios/App/output/
+mobile/ios/DerivedData/
+mobile/ios/App/App.xcworkspace/xcuserdata/
+mobile/ios/App/App.xcodeproj/xcuserdata/
+mobile/ios/App/App.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcuserstate
+*.ipa
+
+# Signing material - NEVER commit these, this repo is public.
+# Certificates/profiles are supplied to CI as encrypted secrets instead
+# (see the GitHub Actions workflow once it exists).
+*.p12
+*.jks
+*.keystore
+*.mobileprovision
+*.cer
+
+# OS junk
+.DS_Store
+Thumbs.db

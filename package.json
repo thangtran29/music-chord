@@ -1,0 +1,14 @@
+{
+  "name": "chord-check",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Realtime chord and note recognition in the browser, powered by Essentia.js (WASM)",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node test/chord-accuracy.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

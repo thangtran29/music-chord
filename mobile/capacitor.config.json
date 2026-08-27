@@ -1,0 +1,8 @@
+{
+  "appId": "com.chordcheck.app",
+  "appName": "ChordCheck",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}

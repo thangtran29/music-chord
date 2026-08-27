@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121212">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Chord &amp; Note Detector - Essentia.js</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231e1e1e'/><ellipse cx='12.5' cy='22' rx='6.5' ry='5' fill='%2300e676'/><rect x='17.4' y='6' width='2.6' height='16.4' fill='%2300e676'/><path d='M20 6c4.2 1 6.8 3.1 6.8 6.2-1.6-2.4-4-3.2-6.8-3.4z' fill='%2300e676'/></svg>">
+
+  <style>
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+      background-color: #121212;
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      min-height: 100dvh;              /* keeps the mobile address bar from cropping us */
+      margin: 0;
+      padding: max(16px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+               max(16px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+      overscroll-behavior: none;       /* no pull-to-refresh while playing */
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;      /* drops the 300ms double-tap zoom delay */
+    }
+    .card {
+      background: #1e1e1e;
+      padding: clamp(20px, 5vw, 32px) clamp(16px, 5vw, 36px) clamp(24px, 5vw, 34px);
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      text-align: center;
+      width: 100%;
+      max-width: 460px;
+    }
+    h2 { margin: 0 0 16px; font-size: clamp(15px, 4.5vw, 19px); font-weight: 600; }
+
+    /* --- Mode switch --- */
+    #modes {
+      display: flex; gap: 4px; background: #2a2a2a;
+      padding: 4px; border-radius: 12px; margin-bottom: 8px;
+    }
+    #modes button {
+      flex: 1; background: transparent; color: #90a4ae; border: none;
+      min-height: 44px;                /* minimum touch target on mobile */
+      font-size: clamp(12px, 3.5vw, 14px); font-weight: 600;
+      border-radius: 9px; cursor: pointer; font-family: inherit;
+      transition: background-color 0.15s ease, color 0.15s ease;
+    }
+    #modes button.active { background: #37474f; color: #fff; }
+
+    /* --- Main readout --- */
+    #main-display {
+      font-size: clamp(46px, 17vw, 72px);
+      font-weight: bold; color: #00e676;
+      margin: 4px 0 0; min-height: clamp(60px, 21vw, 90px); line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      transition: color 0.15s ease;
+    }
+    /* Names go up to 5 characters now (Cmaj7, Bm7b5); at the full size those
+       overflow a 360px card, so step down once the name gets long. */
+    #main-display.len4 { font-size: clamp(38px, 14vw, 60px); }
+    #main-display.len5 { font-size: clamp(30px, 11vw, 48px); }
+    #main-display.idle { color: #3a3a3a; }
+    #main-display.flat, #main-display.sharp { color: #ffb300; }
+    #sub-display {
+      font-size: clamp(12px, 3.4vw, 15px); color: #b0bec5;
+      min-height: 19px; margin: 6px 0 12px;
+    }
+
+    /* --- Cents meter (note mode) --- */
+    #cents-bar {
+      position: relative; height: 10px; background: #2a2a2a;
+      border-radius: 5px; margin-bottom: 12px; display: none;
+    }
+    #cents-bar.show { display: block; }
+    #cents-bar::before {
+      content: ''; position: absolute; left: 50%; top: -3px;
+      width: 2px; height: 16px; background: #546e7a;
+    }
+    #cents-needle {
+      position: absolute; top: 1px; width: 8px; height: 8px;
+      border-radius: 50%; background: #00e676;
+      transform: translateX(-50%); left: 50%;
+      transition: left 0.12s linear, background-color 0.12s linear;
+    }
+
+    /* --- 12 chroma bars --- */
+    #chroma {
+      display: flex; gap: clamp(2px, 0.8vw, 4px);
+      align-items: flex-end; height: clamp(58px, 17vw, 72px); margin-bottom: 6px;
+    }
+    #chroma .cell { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+    #chroma .bar { height: clamp(44px, 13vw, 56px); display: flex; align-items: flex-end; }
+    #chroma .fill {
+      width: 100%; background: #37474f; border-radius: 2px 2px 0 0; height: 0%;
+      transition: height 0.12s linear, background-color 0.12s linear;
+    }
+    #chroma .fill.on { background: #00e676; }
+    #chroma .lbl { font-size: clamp(8px, 2.4vw, 10px); color: #607d8b; margin-top: 4px; height: 12px; }
+    #chroma .lbl.on { color: #00e676; font-weight: bold; }
+
+    #meter { width: 100%; height: 5px; background: #2a2a2a; border-radius: 3px; overflow: hidden; margin-bottom: 12px; }
+    #meter-fill { height: 100%; width: 0%; background: #546e7a; transition: width 0.15s linear; }
+
+    #history {
+      font-size: clamp(12px, 3.3vw, 14px); color: #78909c;
+      min-height: 19px; margin-bottom: 6px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* Key line and its reset button share a row; the text flexes and truncates,
+       the button keeps a fixed size so it never gets squeezed out on narrow phones. */
+    #key-row { display: none; align-items: center; gap: 8px; margin-bottom: 2px; }
+    #key-row.show { display: flex; }
+    #key-line {
+      flex: 1; min-width: 0; text-align: left;
+      font-size: clamp(11px, 3.1vw, 13px); min-height: 18px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      color: #546e7a;
+    }
+    #key-reset {
+      flex: none; background: #2a2a2a; color: #78909c; border: none;
+      border-radius: 7px; padding: 0 11px; min-height: 34px;
+      font-family: inherit; font-size: clamp(10px, 2.7vw, 11px); font-weight: 700;
+      letter-spacing: 0.4px; cursor: pointer;
+      transition: background-color 0.15s ease, color 0.15s ease;
+    }
+    #key-reset:active { background: #455a64; color: #fff; }
+    @media (hover: hover) {
+      #key-reset:hover { background: #37474f; color: #fff; }
+    }
+    #key-line b { color: #00e676; font-weight: 700; }
+    #key-line .deg { color: #90a4ae; }
+    #key-line .deg i { color: #607d8b; font-style: normal; font-weight: 600; }
+    #key-line .weak { color: #ffb300; }
+    #key-sig {
+      font-size: clamp(10px, 2.9vw, 12px); min-height: 16px; margin-bottom: 12px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      color: #4a5c66; display: none;
+    }
+    #key-sig.show { display: block; }
+    #key-sig .acc { color: #78909c; font-weight: 600; }
+    #status { font-size: clamp(11px, 3vw, 13px); color: #78909c; margin-bottom: 10px; min-height: 17px; }
+    /* Diagnostics can be a full sentence, so let them wrap instead of clipping */
+    #status.error { color: #ff8a80; text-align: left; line-height: 1.45; }
+    #sens {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      margin: 0 0 10px; font-size: clamp(10px, 2.8vw, 11px); color: #78909c;
+      font-family: 'Cascadia Mono', Consolas, monospace;
+    }
+    #sens .lbl { flex: 1; min-width: 0; }
+    #sens button {
+      flex: none; background: #2a2a2a; color: #b0bec5; border: none;
+      border-radius: 6px; min-width: 34px; min-height: 34px; padding: 0 9px;
+      font-family: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    #sens button:active { background: #455a64; color: #fff; }
+    #sens button:disabled { opacity: 0.35; cursor: not-allowed; }
+    @media (hover: hover) { #sens button:hover:not(:disabled) { background: #37474f; color: #fff; } }
+
+    #start-btn {
+      background-color: #00e676; color: #121212; border: none;
+      width: 100%; min-height: 52px; padding: 14px 24px;
+      font-size: clamp(15px, 4.2vw, 17px); font-weight: bold; font-family: inherit;
+      border-radius: 30px; cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+    #start-btn:active:not(:disabled) { background-color: #00b359; }
+    #start-btn.listening { background-color: #ff5252; color: #fff; }
+    #start-btn:disabled { background-color: #424242; color: #757575; cursor: not-allowed; }
+
+    /* Hover effects only where there is a real pointer */
+    @media (hover: hover) {
+      #start-btn:hover:not(:disabled) { background-color: #00b359; transform: scale(1.02); }
+      #start-btn.listening:hover:not(:disabled) { background-color: #d32f2f; }
+      #modes button:hover:not(.active) { color: #cfd8dc; }
+    }
+    /* Short viewports (phone in landscape): shrink the decorative parts */
+    @media (max-height: 520px) {
+      body { justify-content: flex-start; }
+      #chroma { height: 44px; }
+      #chroma .bar { height: 32px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>Chord &amp; Note Detector</h2>
+
+    <div id="modes">
+      <button data-mode="chord" class="active">CHORD</button>
+      <button data-mode="note">NOTE</button>
+    </div>
+
+    <div id="main-display" class="idle">--</div>
+    <div id="sub-display"></div>
+
+    <div id="cents-bar"><div id="cents-needle"></div></div>
+    <div id="chroma"></div>
+    <div id="meter"><div id="meter-fill"></div></div>
+
+    <div id="history"></div>
+    <div id="key-row">
+      <div id="key-line"></div>
+      <button id="key-reset" title="Start a new song: clear the chord history and key estimate">RESET</button>
+    </div>
+    <div id="key-sig"></div>
+    <div id="status">Loading engine...</div>
+    <div id="sens">
+      <span class="lbl"></span>
+      <button id="sens-down" title="Less sensitive - ignore quieter sound">&minus;</button>
+      <button id="sens-up" title="More sensitive - react to quieter sound">+</button>
+      <button id="sens-auto" title="Set from the measured noise floor">AUTO</button>
+    </div>
+    <button id="start-btn" disabled>LOADING...</button>
+  </div>
+
+  <script>
+    'use strict';
+
+    // Bumped on every change, so a stale deployment is obvious at a glance
+    const BUILD = '2026-08-27 11:23';
+
+    // ---- Analysis parameters ----
+    const FRAME_SIZE = 4096;        // FFT window size (must match worker.js)
+    const ANALYSIS_SECONDS = 1.0;   // audio span behind each chord estimate
+    const NOTE_SECONDS = 0.35;      // single notes need low latency -> shorter window
+    const TARGET_PERIOD = 150;      // desired analysis cycle (ms)
+    const MIN_GAP = 30;             // always leave the main thread this many ms
+    // Minimum loudness before we bother analysing.
+    //
+    // This is NOT about detection quality. Measured: chord recognition stays 4/4
+    // correct all the way down to RMS 0.0002, and even at -6 dB SNR against pink
+    // room noise - HPCP normalises to unitMax, so absolute level barely matters.
+    //
+    // The gate exists for one reason only: fed pure room noise the detector
+    // happily invents chords (measured: Bm, D#m, F#m... at up to 96% "confidence"),
+    // so the threshold has to sit just above whatever this room's noise floor is,
+    // not at some universally correct number. Hence: low, and check floorRms in
+    // the DIAG panel if phantom chords ever appear in silence.
+    // A ladder of gates rather than one number, because the right value depends
+    // on the room. Roughly a factor of 1.6 apart, so each step is an audible
+    // difference rather than a nudge.
+    const GATE_STEPS = [0.0006, 0.0010, 0.0015, 0.0025, 0.0040, 0.0065, 0.0100];
+    const GATE_DEFAULT = 2;                 // index into GATE_STEPS -> 0.0015
+    const GATE_AUTO_MARGIN = 3;             // gate = measured noise floor x this
+    let gateIndex = GATE_DEFAULT;
+    let RMS_GATE = GATE_STEPS[gateIndex];
+
+    // Remember the choice per device; a phone in a noisy room should not need
+    // setting up again every visit. Private mode can throw on both read and write.
+    try {
+      const saved = parseInt(localStorage.getItem('chordcheck.gate'), 10);
+      if (saved >= 0 && saved < GATE_STEPS.length) { gateIndex = saved; RMS_GATE = GATE_STEPS[saved]; }
+    } catch (err) { /* storage unavailable, stay on the default */ }
+
+    function setGate(idx) {
+      gateIndex = Math.max(0, Math.min(GATE_STEPS.length - 1, idx));
+      RMS_GATE = GATE_STEPS[gateIndex];
+      try { localStorage.setItem('chordcheck.gate', String(gateIndex)); } catch (err) { /* ignore */ }
+      renderSens();
+    }
+    const IN_TUNE_CENTS = 8;        // deviation still counted as in tune
+    const CHROMA_ON = 0.55;         // threshold for calling a pitch class "sounding"
+    const HISTORY_LEN = 8;
+
+    // Two workload tiers. Slow devices drop to 'light' on their own - see adaptQuality().
+    const QUALITY = {
+      full:  { hop: 2048, seconds: 1.0 },   // ~22 frames
+      light: { hop: 4096, seconds: 0.75 }   // ~8 frames, roughly 75% cheaper
+    };
+    const SLOW_MS = 180;            // slower than this -> step down
+    const FAST_MS = 60;             // faster than this -> step back up
+
+    // HPCP bin 0 is A (verified experimentally), so this table starts at A
+    const CHROMA_NAMES = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#'];
+    // Note names in MIDI order, starting at C
+    const MIDI_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    // Chord names now carry a quality suffix, so "does it end in m" no longer
+    // works as a parser - Cmaj7 would read as a C minor chord. Every consumer goes
+    // through parseChord() instead. Must stay in step with CHORD_TYPES in worker.js.
+    // keyQuality collapses each chord onto the plain triad the key scorer expects.
+    const CHORD_QUALITIES = {
+      '':     { iv: [0, 4, 7],     keyQuality: ''  },
+      'm':    { iv: [0, 3, 7],     keyQuality: 'm' },
+      '7':    { iv: [0, 4, 7, 10], keyQuality: ''  },
+      'm7':   { iv: [0, 3, 7, 10], keyQuality: 'm' },
+      'maj7': { iv: [0, 4, 7, 11], keyQuality: ''  },
+      'sus4': { iv: [0, 5, 7],     keyQuality: ''  },
+      'dim':  { iv: [0, 3, 6],     keyQuality: 'm' },
+      'm7b5': { iv: [0, 3, 6, 10], keyQuality: 'm' },
+      'aug':  { iv: [0, 4, 8],     keyQuality: ''  },
+      'dim7': { iv: [0, 3, 6, 9],  keyQuality: 'm' }
+    };
+
+    // ---- Key detection ----
+    const KEY_STABLE_TICKS = 2;     // a chord must survive 2 ticks before it counts (noise gate)
+    const KEY_WINDOW = 32;          // only score the last 32 chords
+    const KEY_MIN_CHORDS = 3;       // fewer distinct chords than this is not enough to guess
+    const KEY_WEAK_MARGIN = 3.0;    // margin below this -> show both candidates
+
+    // Weights by harmonic function. This table scored 7/8 on common progressions
+    // (the single miss was a relative major/minor pair, which is genuinely ambiguous).
+    const MAJOR_FIT = [
+      { deg: 0,  q: '',  w: 3.0 },   // I
+      { deg: 2,  q: 'm', w: 1.0 },   // ii
+      { deg: 4,  q: 'm', w: 1.0 },   // iii
+      { deg: 5,  q: '',  w: 2.0 },   // IV
+      { deg: 7,  q: '',  w: 3.0 },   // V
+      { deg: 9,  q: 'm', w: 1.5 },   // vi
+      { deg: 10, q: '',  w: 0.8 }    // bVII, borrowed
+    ];
+    const MINOR_FIT = [
+      { deg: 0,  q: 'm', w: 3.0 },   // i
+      { deg: 0,  q: '',  w: 1.0 },   // I - major tonic, a real brightening device
+      { deg: 2,  q: '',  w: 0.8 },   // II, borrowed
+      { deg: 3,  q: '',  w: 1.5 },   // III
+      { deg: 5,  q: 'm', w: 2.0 },   // iv
+      { deg: 7,  q: 'm', w: 1.5 },   // v - natural minor (Aeolian)
+      { deg: 7,  q: '',  w: 2.5 },   // V - harmonic minor
+      { deg: 8,  q: '',  w: 1.5 },   // VI
+      { deg: 10, q: '',  w: 1.5 }    // VII
+    ];
+    /**
+     * Key signatures for all 24 keys, indexed by pitch class.
+     * `root` is the spelling musicians actually write, which is not always the
+     * sharp spelling this app uses for chord names: pitch class 10 major is Bb
+     * major (2 flats), never A# major (which would need 10 sharps). Where the two
+     * disagree the signature line shows the conventional name as well.
+     * Enharmonic ties (6 sharps vs 6 flats) follow the more common convention:
+     * F# major but Eb minor.
+     */
+    const SHARP_ORDER = ['F#', 'C#', 'G#', 'D#', 'A#', 'E#', 'B#'];
+    const FLAT_ORDER  = ['Bb', 'Eb', 'Ab', 'Db', 'Gb', 'Cb', 'Fb'];
+    // Flat spelling of the 12 pitch classes, for keys whose signature uses flats
+    const FLAT_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+    const KEY_SIG_MAJOR = [
+      { root: 'C',  n: 0, acc: '' },      // 0
+      { root: 'Db', n: 5, acc: 'b' },     // 1
+      { root: 'D',  n: 2, acc: '#' },     // 2
+      { root: 'Eb', n: 3, acc: 'b' },     // 3
+      { root: 'E',  n: 4, acc: '#' },     // 4
+      { root: 'F',  n: 1, acc: 'b' },     // 5
+      { root: 'F#', n: 6, acc: '#' },     // 6
+      { root: 'G',  n: 1, acc: '#' },     // 7
+      { root: 'Ab', n: 4, acc: 'b' },     // 8
+      { root: 'A',  n: 3, acc: '#' },     // 9
+      { root: 'Bb', n: 2, acc: 'b' },     // 10
+      { root: 'B',  n: 5, acc: '#' }      // 11
+    ];
+    const KEY_SIG_MINOR = [
+      { root: 'C',  n: 3, acc: 'b' },     // 0  -> rel. Eb major
+      { root: 'C#', n: 4, acc: '#' },     // 1  -> rel. E major
+      { root: 'D',  n: 1, acc: 'b' },     // 2  -> rel. F major
+      { root: 'Eb', n: 6, acc: 'b' },     // 3  -> rel. Gb major
+      { root: 'E',  n: 1, acc: '#' },     // 4  -> rel. G major
+      { root: 'F',  n: 4, acc: 'b' },     // 5  -> rel. Ab major
+      { root: 'F#', n: 3, acc: '#' },     // 6  -> rel. A major
+      { root: 'G',  n: 2, acc: 'b' },     // 7  -> rel. Bb major
+      { root: 'G#', n: 5, acc: '#' },     // 8  -> rel. B major
+      { root: 'A',  n: 0, acc: '' },      // 9  -> rel. C major
+      { root: 'Bb', n: 5, acc: 'b' },     // 10 -> rel. Db major
+      { root: 'B',  n: 2, acc: '#' }      // 11 -> rel. D major
+    ];
+
+    const mainEl = document.getElementById('main-display');
+    const subEl = document.getElementById('sub-display');
+    const centsBar = document.getElementById('cents-bar');
+    const needleEl = document.getElementById('cents-needle');
+    const chromaEl = document.getElementById('chroma');
+    const meterEl = document.getElementById('meter-fill');
+    const historyEl = document.getElementById('history');
+    const keyEl = document.getElementById('key-line');
+    const sigEl = document.getElementById('key-sig');
+    const keyRowEl = document.getElementById('key-row');
+    const statusEl = document.getElementById('status');
+    const btn = document.getElementById('start-btn');
+
+    let worker = null, workerReady = false;
+    let running = false;
+    let mode = 'chord';
+    let audioCtx, stream, micSource, processor, wakeLock = null;
+    // Diagnostics: on a phone there is no console, so the app has to be able to
+    // say what it is actually seeing.
+    let audioCallbacks = 0, floorRms = Infinity, watchdog = null;
+
+    // Raw audio ring buffer: written from the audio thread, read by the analysis loop
+    let ring = null, ringWrite = 0, ringLen = 0, sampleRate = 48000, analysisLen = 0;
+    const history = [];
+
+    // Committed chord sequence, used for key detection
+    const chordSeq = [];
+    let keyPending = null, keyPendingCount = 0;
+
+    // Analysis loop bookkeeping
+    let busy = false, seq = 0, timer = null;
+    let quality = 'full';
+    const recentMs = [];
+
+    // ---- Build the 12 chroma bars ----
+    const chromaFills = [], chromaLabels = [];
+    CHROMA_NAMES.forEach(function (name) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      const fill = document.createElement('div');
+      fill.className = 'fill';
+      bar.appendChild(fill);
+      const lbl = document.createElement('div');
+      lbl.className = 'lbl';
+      lbl.textContent = name;
+      cell.appendChild(bar);
+      cell.appendChild(lbl);
+      chromaEl.appendChild(cell);
+      chromaFills.push(fill);
+      chromaLabels.push(lbl);
+    });
+
+    // =====================================================================
+    //  Worker - all DSP lives there, so the main thread never blocks
+    // =====================================================================
+    function fail(msg) {
+      statusEl.textContent = msg;
+      statusEl.classList.add('error');
+      btn.disabled = true;
+      console.error('[chord-check] ' + msg);
+    }
+
+    /**
+     * worker.onerror hands us an empty message when the worker script itself could
+     * not be loaded or parsed - the browser hides the detail for security reasons,
+     * and it looks identical to a runtime throw. So probe the URL ourselves and
+     * report the real reason instead of the useless "unknown".
+     */
+    async function diagnoseWorker() {
+      if (location.protocol === 'file:') {
+        fail('Workers cannot run from file:// — serve the folder over HTTP (npm start).');
+        return;
+      }
+      const url = new URL('worker.js', location.href).href;
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        const type = res.headers.get('content-type') || '(none)';
+        if (!res.ok) {
+          fail('worker.js returned HTTP ' + res.status + ' at ' + url +
+               ' — it must be deployed next to index.html.');
+        } else if (!/javascript|ecmascript/i.test(type)) {
+          fail('worker.js was served as "' + type + '" — a Worker needs a JavaScript MIME type.');
+        } else {
+          fail('worker.js loaded (HTTP 200, ' + type + ') but the Worker still failed to start. ' +
+               'Open the browser console for the underlying error.');
+        }
+      } catch (err) {
+        fail('Could not fetch worker.js (' + url + '): ' + err.message);
+      }
+    }
+
+    function initWorker() {
+      try {
+        worker = new Worker('worker.js');
+      } catch (err) {
+        fail('Could not create Worker: ' + err.message);
+        return;
+      }
+      worker.onerror = function (e) {
+        if (e && e.message) fail('Worker error: ' + e.message);
+        else diagnoseWorker();
+      };
+      worker.onmessage = function (e) {
+        const msg = e.data;
+        if (msg.type === 'ready') {
+          workerReady = true;
+          // The version only matters when debugging, so it goes to the console
+          console.log('chord-check build ' + BUILD + ' · Essentia.js v' + msg.version);
+          statusEl.textContent = 'Ready';
+          btn.disabled = false;
+          btn.textContent = 'START MIC';
+        } else if (msg.type === 'error') {
+          statusEl.textContent = msg.message;
+          btn.disabled = true;
+        } else if (msg.type === 'result') {
+          onResult(msg);
+        }
+      };
+    }
+    initWorker();
+
+    // ---- Pitch conversion ----
+    function hzToNote(hz) {
+      const midi = 69 + 12 * Math.log2(hz / 440);
+      const rounded = Math.round(midi);
+      return {
+        name: MIDI_NAMES[((rounded % 12) + 12) % 12],
+        octave: Math.floor(rounded / 12) - 1,
+        cents: Math.round((midi - rounded) * 100)
+      };
+    }
+
+    // Chord tones derived from the name, which beats picking chroma peaks
+    function chordNotes(chord) {
+      const p = parseChord(chord);
+      if (!p) return null;
+      return p.iv.map(function (i) { return MIDI_NAMES[(p.pc + i) % 12]; });
+    }
+
+    // ---- Ring buffer ----
+    function writeSamples(chunk) {
+      for (let i = 0; i < chunk.length; i++) {
+        ring[ringWrite] = chunk[i];
+        ringWrite = ringWrite + 1 === ringLen ? 0 : ringWrite + 1;
+      }
+    }
+
+    function readLatest(n) {
+      const out = new Float32Array(n);
+      let idx = (ringWrite - n + ringLen) % ringLen;
+      for (let i = 0; i < n; i++) {
+        out[i] = ring[idx];
+        idx = idx + 1 === ringLen ? 0 : idx + 1;
+      }
+      return out;
+    }
+
+    // ---- Rendering ----
+    function drawChroma(chroma, highlight) {
+      for (let i = 0; i < 12; i++) {
+        const v = chroma ? chroma[i] : 0;
+        chromaFills[i].style.height = Math.round(v * 100) + '%';
+        const on = highlight ? highlight.indexOf(CHROMA_NAMES[i]) !== -1 : v >= CHROMA_ON;
+        chromaFills[i].classList.toggle('on', on);
+        chromaLabels[i].classList.toggle('on', on);
+      }
+    }
+
+    function showIdle(msg) {
+      mainEl.textContent = '--';
+      mainEl.className = 'idle';
+      subEl.textContent = '';
+      centsBar.classList.remove('show');
+      drawChroma(null, null);
+      if (msg) statusEl.textContent = msg;
+    }
+
+    function pushHistory(label) {
+      if (history[history.length - 1] === label) return;
+      history.push(label);
+      if (history.length > HISTORY_LEN) history.shift();
+      historyEl.textContent = history.join('  →  ');
+    }
+
+    // =====================================================================
+    //  Key detection from the chord sequence
+    //
+    //  Essentia's own Key() on a session-averaged HPCP was also tried, but it
+    //  only got 2/4 right (C Am F G -> reported F major, G D Em C -> C major).
+    //  Averaging HPCP throws away all timing and harmonic function, leaving only
+    //  "which pitch class sounded most" - which does not determine the tonic.
+    //  Scoring the chord sequence keeps function intact and is more accurate.
+    // =====================================================================
+
+    /** Parse a chord name -> {pc, q, iv}, or null. q is the plain-triad quality. */
+    function parseChord(chord) {
+      const m = /^([A-G]#?)(.*)$/.exec(chord);
+      if (!m) return null;
+      const pc = MIDI_NAMES.indexOf(m[1]);
+      const quality = CHORD_QUALITIES[m[2]];
+      if (pc < 0 || !quality) return null;
+      return { pc: pc, q: quality.keyQuality, iv: quality.iv };
+    }
+
+    /** Score all 24 keys, returned sorted by descending score */
+    function scoreKeys(seq) {
+      const counts = new Map();
+      seq.forEach(function (c) { counts.set(c, (counts.get(c) || 0) + 1); });
+
+      let topChord = null, topN = 0;
+      counts.forEach(function (n, c) { if (n > topN) { topN = n; topChord = c; } });
+
+      const out = [];
+      for (let tonic = 0; tonic < 12; tonic++) {
+        for (let s = 0; s < 2; s++) {
+          const scale = s ? 'minor' : 'major';
+          const table = s ? MINOR_FIT : MAJOR_FIT;
+          const tonicName = MIDI_NAMES[tonic] + (s ? 'm' : '');
+          let score = 0, fit = 0;
+
+          counts.forEach(function (n, ch) {
+            const p = parseChord(ch);
+            if (!p) return;
+            const deg = ((p.pc - tonic) + 12) % 12;
+            let w = 0;
+            for (let i = 0; i < table.length; i++) {
+              if (table[i].deg === deg && table[i].q === p.q) w = Math.max(w, table[i].w);
+            }
+            if (w > 0) { score += w * n; fit += n; } else { score -= n; }
+          });
+
+          // The tonic tends to open, to close, and to be the most frequent chord
+          if (seq[0] === tonicName) score += 2.0;
+          if (seq[seq.length - 1] === tonicName) score += 2.5;
+          if (topChord === tonicName) score += 2.5;
+          if (!counts.has(tonicName)) score -= 3.0;   // tonic never played at all
+
+          out.push({ tonic: tonic, scale: scale, name: tonicName, score: score, fit: fit });
+        }
+      }
+      out.sort(function (a, b) { return b.score - a.score; });
+      return out;
+    }
+
+    function keySig(tonic, scale) {
+      return (scale === 'minor' ? KEY_SIG_MINOR : KEY_SIG_MAJOR)[tonic];
+    }
+
+    /**
+     * The key line is spelled the way the key is actually written, not with the
+     * sharp-only names the detector emits. In F minor the iv chord is Bbm, and
+     * printing "A#m" right above a signature that reads "4 flats: Bb Eb Ab Db"
+     * just reads as a contradiction. The big chord readout stays sharp-spelled:
+     * that one reports what is sounding now, before any key is known.
+     */
+    function keyLabel(tonic, scale) {
+      return keySig(tonic, scale).root + (scale === 'minor' ? 'm' : '');
+    }
+
+    /** Chord name for a scale degree, e.g. degreeChord(4, 5, 'm', false) in E minor -> "Am" */
+    function degreeChord(tonic, semitones, quality, useFlats) {
+      const names = useFlats ? FLAT_NAMES : MIDI_NAMES;
+      return names[(tonic + semitones) % 12] + quality;
+    }
+
+    /** Key signature as text: how many accidentals and which ones. */
+    function keySignature(tonic, scale) {
+      const sig = keySig(tonic, scale);
+      if (sig.n === 0) return 'no sharps or flats';
+      const list = (sig.acc === '#' ? SHARP_ORDER : FLAT_ORDER).slice(0, sig.n);
+      const word = (sig.acc === '#' ? 'sharp' : 'flat') + (sig.n > 1 ? 's' : '');
+      return sig.n + ' ' + word + ': <span class="acc">' + list.join(' ') + '</span>';
+    }
+
+    /** Append to the sequence, but only once a chord survives KEY_STABLE_TICKS */
+    function commitChord(chord) {
+      if (chord === keyPending) keyPendingCount++;
+      else { keyPending = chord; keyPendingCount = 1; }
+      if (keyPendingCount !== KEY_STABLE_TICKS) return false;
+      if (chordSeq[chordSeq.length - 1] === chord) return false;
+      chordSeq.push(chord);
+      if (chordSeq.length > KEY_WINDOW) chordSeq.shift();
+      return true;
+    }
+
+    function updateKeyLine() {
+      const inChordMode = mode === 'chord';
+      keyRowEl.classList.toggle('show', inChordMode);
+      sigEl.classList.toggle('show', inChordMode);
+      if (!inChordMode) return;
+
+      const distinct = new Set(chordSeq).size;
+      if (distinct < KEY_MIN_CHORDS) {
+        keyEl.innerHTML = 'Key: need more chords (' + distinct + '/' + KEY_MIN_CHORDS + ')';
+        sigEl.innerHTML = '';
+        return;
+      }
+
+      const ranked = scoreKeys(chordSeq);
+      const best = ranked[0], second = ranked[1];
+      const margin = best.score - second.score;
+
+      const isMinor = best.scale === 'minor';
+      const flats = keySig(best.tonic, best.scale).acc === 'b';
+
+      // The chords worth naming outright, instead of a roman numeral sequence the
+      // reader has to decode. Degrees 4 and 5 are the usual neighbours either way.
+      // The third slot has to differ by mode: in minor the diatonic 7th is a MAJOR
+      // chord and one of the most played of all (Em -> D), while in major the 7th
+      // is diminished and effectively never played - so there the relative minor
+      // (vi) earns the slot instead.
+      const DEGREES = isMinor
+        ? [['iv', 5, 'm'], ['v', 7, 'm'], ['VII', 10, '']]
+        : [['IV', 5, ''],  ['V', 7, ''],  ['vi', 9, 'm']];
+
+      let head = 'Key: <b>' + keyLabel(best.tonic, best.scale) + '</b>';
+      if (margin < KEY_WEAK_MARGIN) {
+        head += ' <span class="weak">or ' + keyLabel(second.tonic, second.scale) + '?</span>';
+      }
+      const degText = DEGREES.map(function (d) {
+        return '<i>' + d[0] + '</i> ' + degreeChord(best.tonic, d[1], d[2], flats);
+      }).join(' · ');
+      keyEl.innerHTML = head + ' <span class="deg">· ' + degText + '</span>';
+      sigEl.innerHTML = keySignature(best.tonic, best.scale);
+    }
+
+    function resetKey() {
+      chordSeq.length = 0;
+      keyPending = null;
+      keyPendingCount = 0;
+      sigEl.innerHTML = '';
+      keyEl.innerHTML = mode === 'chord' ? 'Key: need more chords (0/' + KEY_MIN_CHORDS + ')' : '';
+      keyRowEl.classList.toggle('show', mode === 'chord');
+      sigEl.classList.toggle('show', mode === 'chord');
+    }
+
+    // =====================================================================
+    //  Analysis loop: self-scheduling, not setInterval.
+    //  The next request only goes out after the previous result came back, so no
+    //  matter how slow the device is, work can never pile up in a queue.
+    // =====================================================================
+    function schedule(delay) {
+      clearTimeout(timer);
+      if (!running) return;
+      timer = setTimeout(tick, delay);
+    }
+
+    function tick() {
+      if (!running || busy || !workerReady) return;
+
+      const q = QUALITY[quality];
+      const want = mode === 'note'
+        ? Math.max(FRAME_SIZE, Math.round(NOTE_SECONDS * sampleRate))
+        : Math.max(FRAME_SIZE, Math.round(q.seconds * sampleRate));
+      const audio = readLatest(Math.min(want, analysisLen));
+
+      // Loudness gate runs here because it is cheap - silence need not wake the worker
+      let sumSq = 0;
+      for (let i = 0; i < audio.length; i++) sumSq += audio[i] * audio[i];
+      const rms = Math.sqrt(sumSq / audio.length);
+      // Linear width makes a quiet phone mic look like a dead one. Map -60..0 dB
+      // across the bar instead, so anything above silence is visibly moving.
+      const db = 20 * Math.log10(Math.max(rms, 1e-6));
+      meterEl.style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)).toFixed(1) + '%';
+
+      if (rms < floorRms) floorRms = rms;   // quietest moment seen = this room's noise floor
+      renderSens();                         // keeps the floor readout and AUTO in step
+
+      if (rms < RMS_GATE) {
+        // Always print the measured level. "Too quiet" on its own cannot tell a
+        // silent audio graph (level exactly 0) from a mic that is simply quiet,
+        // and that distinction is the whole diagnosis.
+        showIdle(audioCallbacks === 0
+          ? 'No audio arriving yet'
+          : 'Too quiet — level ' + rms.toFixed(4) + ', need ' + RMS_GATE);
+        schedule(TARGET_PERIOD);
+        return;
+      }
+
+      busy = true;
+      seq++;
+      worker.postMessage(
+        { cmd: 'analyse', audio: audio, mode: mode, hop: q.hop, seq: seq },
+        [audio.buffer]   // transfer ownership instead of copying
+      );
+    }
+
+    /** Step down on slow devices, back up on fast ones. Hysteresis avoids flapping. */
+    function adaptQuality(ms) {
+      recentMs.push(ms);
+      if (recentMs.length > 5) recentMs.shift();
+      if (recentMs.length < 5) return;
+      const sorted = recentMs.slice().sort(function (a, b) { return a - b; });
+      const median = sorted[2];
+      if (quality === 'full' && median > SLOW_MS) {
+        quality = 'light';
+        recentMs.length = 0;
+      } else if (quality === 'light' && median < FAST_MS) {
+        quality = 'full';
+        recentMs.length = 0;
+      }
+    }
+
+    function onResult(msg) {
+      busy = false;
+      if (msg.seq !== seq) { schedule(MIN_GAP); return; }   // stale result, drop it
+
+      adaptQuality(msg.ms);
+      const nextDelay = Math.max(MIN_GAP, TARGET_PERIOD - msg.ms);
+
+      if (msg.error) {
+        statusEl.textContent = 'Analysis error: ' + msg.error;
+        schedule(nextDelay);
+        return;
+      }
+
+      const suffix = ' · ' + msg.ms.toFixed(0) + 'ms' + (quality === 'light' ? ' · light mode' : '');
+
+      if (msg.mode === 'note') {
+        if (!msg.hz) {
+          mainEl.textContent = '--';
+          mainEl.className = 'idle';
+          subEl.textContent = 'No clear pitch — try a single note';
+          centsBar.classList.remove('show');
+          drawChroma(msg.chroma, null);
+        } else {
+          const note = hzToNote(msg.hz);
+          const inTune = Math.abs(note.cents) <= IN_TUNE_CENTS;
+          mainEl.textContent = note.name + note.octave;
+          mainEl.className = inTune ? '' : (note.cents < 0 ? 'flat' : 'sharp');
+          subEl.textContent = (note.cents >= 0 ? '+' : '') + note.cents + ' cents · ' + msg.hz.toFixed(1) + ' Hz';
+          centsBar.classList.add('show');
+          needleEl.style.left = Math.max(0, Math.min(100, 50 + note.cents)) + '%';   // ±50c spans the meter
+          needleEl.style.background = inTune ? '#00e676' : '#ffb300';
+          drawChroma(msg.chroma, [note.name]);
+          pushHistory(note.name + note.octave);
+        }
+      } else {
+        centsBar.classList.remove('show');
+        if (msg.chord) {
+          const chord = msg.chord;
+          const notes = chordNotes(chord);
+          mainEl.textContent = chord;
+          mainEl.className = chord.length >= 5 ? 'len5' : (chord.length === 4 ? 'len4' : '');
+          subEl.textContent = (notes ? notes.join(' – ') + '  ·  ' : '') +
+                              Math.round(msg.confidence * 100) + '% confidence';
+          drawChroma(msg.chroma, notes);
+          pushHistory(chord);
+          if (commitChord(chord)) updateKeyLine();
+        } else {
+          drawChroma(msg.chroma, null);
+        }
+      }
+      // Only mention tuning when it actually deviates - otherwise it is just noise
+      const tune = (msg.tuningCents !== undefined && Math.abs(msg.tuningCents) > 5)
+        ? ' · A=' + msg.tuningHz.toFixed(0) + 'Hz' : '';
+      statusEl.textContent = 'Listening · ' + sampleRate + ' Hz' + tune + suffix;
+      schedule(nextDelay);
+    }
+
+    // Manual reset, for moving on to the next song without stopping the mic.
+    // Clears the visible chord history as well, otherwise stale chords stay on
+    // screen while the estimate behind them is empty.
+    document.getElementById('key-reset').addEventListener('click', function () {
+      history.length = 0;
+      historyEl.textContent = '';
+      resetKey();
+    });
+
+    // =====================================================================
+    //  Mode switch
+    // =====================================================================
+    document.getElementById('modes').addEventListener('click', function (e) {
+      const target = e.target.closest('button[data-mode]');
+      if (!target || target.dataset.mode === mode) return;
+      mode = target.dataset.mode;
+      Array.prototype.forEach.call(this.querySelectorAll('button'), function (b) {
+        b.classList.toggle('active', b.dataset.mode === mode);
+      });
+      history.length = 0;
+      historyEl.textContent = '';
+      resetKey();
+      showIdle(running ? 'Listening · ' + sampleRate + ' Hz' : null);
+    });
+
+    // =====================================================================
+    //  Start / stop the microphone
+    // =====================================================================
+    async function start() {
+      // iOS Safari only allows opening an AudioContext inside a user gesture, so
+      // it has to be created RIGHT HERE, before any await. Awaiting first breaks
+      // the gesture chain and audio stays stuck in the suspended state.
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const resumed = audioCtx.resume();
+
+      // Voice processing has to be off - it destroys the harmonic structure of instruments
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1
+        },
+        video: false
+      });
+      await resumed;
+
+      sampleRate = audioCtx.sampleRate;   // use the real rate, never force 44100
+      worker.postMessage({ cmd: 'init', sampleRate: sampleRate });
+
+      analysisLen = Math.max(FRAME_SIZE, Math.round(ANALYSIS_SECONDS * sampleRate));
+      ringLen = analysisLen + FRAME_SIZE;
+      ring = new Float32Array(ringLen);
+      ringWrite = 0;
+
+      micSource = audioCtx.createMediaStreamSource(stream);
+      processor = audioCtx.createScriptProcessor(FRAME_SIZE, 1, 1);
+      audioCallbacks = 0;
+      floorRms = Infinity;
+      // This callback only copies samples (tens of microseconds). All DSP sits in
+      // the worker, so the main thread stays free and ScriptProcessor never starves.
+      processor.onaudioprocess = function (e) {
+        audioCallbacks++;
+        writeSamples(e.inputBuffer.getChannelData(0));
+      };
+
+      // Connect straight to the destination. A ScriptProcessorNode leaves its
+      // output buffer zero-filled, so this is already silent - no echo, and no
+      // extra gain node whose silent branch Safari might optimise away, which
+      // would stop the graph being pulled and onaudioprocess would never fire.
+      micSource.connect(processor);
+      processor.connect(audioCtx.destination);
+
+      running = true;
+      busy = false;
+      quality = 'full';
+      recentMs.length = 0;
+      history.length = 0;
+      historyEl.textContent = '';
+      resetKey();
+      btn.classList.add('listening');
+      btn.textContent = 'STOP';
+      statusEl.classList.remove('error');
+      statusEl.textContent = 'Listening · ' + sampleRate + ' Hz';
+      requestWakeLock();
+      schedule(MIN_GAP);
+
+      // If the graph is never pulled, onaudioprocess simply never runs and every
+      // frame we analyse is the zero-filled ring buffer - which looks exactly like
+      // "too quiet". Distinguish the two explicitly instead of blaming the player.
+      clearTimeout(watchdog);
+      watchdog = setTimeout(function () {
+        if (!running) return;
+        if (audioCallbacks === 0) {
+          statusEl.classList.add('error');
+          statusEl.textContent = 'Microphone is open but no audio is arriving' +
+            (audioCtx ? ' (context ' + audioCtx.state + ')' : '') + '.';
+        }
+      }, 2000);
+    }
+
+    function stop() {
+      running = false;
+      busy = false;
+      clearTimeout(timer);
+      clearTimeout(watchdog);
+      if (processor) { processor.onaudioprocess = null; processor.disconnect(); }
+      if (micSource) micSource.disconnect();
+      if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+      if (audioCtx) audioCtx.close();
+      processor = micSource = stream = audioCtx = null;
+      releaseWakeLock();
+
+      meterEl.style.width = '0%';
+      btn.classList.remove('listening');
+      btn.textContent = 'START MIC';
+      showIdle('Stopped');
+    }
+
+    btn.addEventListener('click', async function () {
+      if (running) { stop(); return; }
+      btn.disabled = true;
+      try {
+        await start();
+      } catch (err) {
+        statusEl.textContent = 'Cannot access microphone: ' + err.message;
+        stop();
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // ---- Keep the screen awake while playing (not available everywhere) ----
+    async function requestWakeLock() {
+      if (!('wakeLock' in navigator)) return;
+      try { wakeLock = await navigator.wakeLock.request('screen'); }
+      catch (err) { /* low battery or blocked - not important */ }
+    }
+    function releaseWakeLock() {
+      if (wakeLock) { wakeLock.release().catch(function () {}); wakeLock = null; }
+    }
+
+    // Switching tabs or locking the phone suspends the AudioContext and revokes the
+    // wake lock. Restore both on return, otherwise the app just looks frozen.
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden || !running) return;
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+      requestWakeLock();
+      schedule(MIN_GAP);
+    });
+
+    // =====================================================================
+    //  Diagnostics. A phone has no console, so tapping the status line has to be
+    //  enough to tell whether audio is arriving at all, and at what level.
+    // =====================================================================
+    const sensEl = document.getElementById('sens');
+    const sensLbl = sensEl.querySelector('.lbl');
+    const sensDown = document.getElementById('sens-down');
+    const sensUp = document.getElementById('sens-up');
+    const sensAuto = document.getElementById('sens-auto');
+
+    let sensShown = '';
+    function renderSens() {
+      // The noise floor sits right next to the gate because it is the number that
+      // says whether the gate is set correctly: floor below gate means silence
+      // stays silent, floor above gate means phantom chords.
+      const text = 'gate ' + RMS_GATE.toFixed(4) +
+        (floorRms === Infinity ? '' : ' · floor ' + floorRms.toFixed(4));
+      if (text !== sensShown) { sensLbl.textContent = text; sensShown = text; }
+      // "+" means more sensitive, which is a LOWER gate - hence the inverted ends
+      sensUp.disabled = gateIndex === 0;
+      sensDown.disabled = gateIndex === GATE_STEPS.length - 1;
+      sensAuto.disabled = floorRms === Infinity;
+    }
+    renderSens();
+    sensUp.addEventListener('click', function () { setGate(gateIndex - 1); });
+    sensDown.addEventListener('click', function () { setGate(gateIndex + 1); });
+    sensAuto.addEventListener('click', function () {
+      if (floorRms === Infinity) return;
+      // Lowest step that still clears the measured noise floor with margin
+      const want = floorRms * GATE_AUTO_MARGIN;
+      let idx = GATE_STEPS.findIndex(function (g) { return g >= want; });
+      if (idx === -1) idx = GATE_STEPS.length - 1;
+      setGate(idx);
+    });
+
+
+    // iOS suspends the AudioContext for its own reasons and does not always tell
+    // us. Any touch is a user gesture, which is the only moment resume() is
+    // allowed to work, so use it.
+    ['touchend', 'pointerup'].forEach(function (evt) {
+      document.addEventListener(evt, function () {
+        if (running && audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+      }, { passive: true });
+    });
+
+    window.addEventListener('pagehide', function () { if (running) stop(); });
+
+    resetKey();   // show the key line in its waiting state (chord is the default mode)
+  </script>
+</body>
+</html>
