@@ -1,0 +1,66 @@
+name: Android build
+
+# Debug build only - no signing needed, so this validates the app still
+# builds on every push without requiring any Apple/Google secrets. Release
+# signing (for a real Play Store upload) is a separate step to add once
+# there's a keystore to inject as a secret.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'worker.js'
+      - 'mobile/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # Capacitor 8's CLI requires Node >=22, see mobile/.nvmrc
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21' # matches AGP 8.13 (mobile/android/build.gradle)
+
+      - name: Install mobile/ dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - name: Sync web app + Essentia.js into the native Android project
+        working-directory: mobile
+        # sync.js copies the root index.html/worker.js plus the offline
+        # Essentia bundle into www/ (downloading it once if not cached -
+        # there is no cache to restore on a fresh checkout); cap sync then
+        # copies www/ into android/app/src/main/assets/public.
+        run: |
+          node sync.js
+          npx cap sync android
+
+      - name: Ensure the compileSdk platform + build-tools are installed
+        # GitHub's runner image doesn't always have the newest API level
+        # (compileSdk 36 here) preinstalled yet - installing explicitly
+        # avoids a flaky "requires platform android-36" failure.
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chord-check-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
