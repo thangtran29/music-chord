@@ -4,16 +4,10 @@ name: Android build
 # builds on every push without requiring any Apple/Google secrets. Release
 # signing (for a real Play Store upload) is a separate step to add once
 # there's a keystore to inject as a secret.
+#
+# Manual only for now: Android packaging isn't being worked on yet, so it
+# shouldn't run on every push. Re-add push/pull_request triggers when it is.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'index.html'
-      - 'worker.js'
-      - 'mobile/**'
-      - '.github/workflows/android.yml'
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 jobs:

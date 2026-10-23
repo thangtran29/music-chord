@@ -28,6 +28,13 @@
       overscroll-behavior: none;       /* no pull-to-refresh while playing */
       -webkit-tap-highlight-color: transparent;
       touch-action: manipulation;      /* drops the 300ms double-tap zoom delay */
+      /* Belt-and-suspenders: a growing nowrap chord-history string should
+         never be able to widen the page (seen inside the Zalo Mini App
+         WebView, whose own wrapper markup around the page body we don't control).
+         overflow:hidden here stops the whole page from panning sideways
+         even if some descendant's own clipping fails. */
+      overflow-x: hidden;
+      width: 100%;
     }
     .card {
       background: #1e1e1e;
@@ -36,7 +43,9 @@
       box-shadow: 0 10px 30px rgba(0,0,0,0.5);
       text-align: center;
       width: 100%;
-      max-width: 460px;
+      max-width: min(460px, 100%);
+      overflow: hidden;                /* clip the card's own boundary too, not just the page */
+      box-sizing: border-box;
     }
     h2 { margin: 0 0 16px; font-size: clamp(15px, 4.5vw, 19px); font-weight: 600; }
 
@@ -112,6 +121,13 @@
       font-size: clamp(12px, 3.3vw, 14px); color: #78909c;
       min-height: 19px; margin-bottom: 6px;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      /* max-width forces this box to actually respect its parent's width
+         instead of growing to fit the (nowrap) chord-history string, which
+         is what was actually widening the whole .card in the Zalo Mini App
+         WebView as the history list grew - overflow:hidden alone only
+         clips content once the box's own size is already correct. */
+      max-width: 100%;
+      touch-action: pan-y;
     }
     /* Key line and its reset button share a row; the text flexes and truncates,
        the button keeps a fixed size so it never gets squeezed out on narrow phones. */
@@ -228,7 +244,7 @@
     'use strict';
 
     // Bumped on every change, so a stale deployment is obvious at a glance
-    const BUILD = '2026-08-27 11:23';
+    const BUILD = '2026-08-28 17:24';
 
     // ---- Analysis parameters ----
     const FRAME_SIZE = 4096;        // FFT window size (must match worker.js)
@@ -551,11 +567,20 @@
       if (msg) statusEl.textContent = msg;
     }
 
+    // Cap in characters, not just item count: some WebViews (seen in the
+    // Zalo Mini App) let a long nowrap text node widen its container even
+    // with CSS overflow:hidden/max-width set directly on it, so the safe
+    // fix is to never hand the DOM more text than fits in the first place.
+    // Truncating from the front keeps the tail - the most recent chords,
+    // which is what you actually want visible, not the oldest ones.
+    const HISTORY_MAX_CHARS = 40;
+
     function pushHistory(label) {
       if (history[history.length - 1] === label) return;
       history.push(label);
       if (history.length > HISTORY_LEN) history.shift();
-      historyEl.textContent = history.join('  →  ');
+      const full = history.join('  →  ');
+      historyEl.textContent = full.length > HISTORY_MAX_CHARS ? '…' + full.slice(-HISTORY_MAX_CHARS) : full;
     }
 
     // =====================================================================
